@@ -3,7 +3,7 @@
 <html lang="th">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Sumo Pad</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kanit:wght@500;600&family=Orbitron:wght@600;700&family=Sarabun:wght@400;600&display=swap">
 <style>
@@ -16,15 +16,16 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 input { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 button { touch-action: none; -webkit-appearance: none; appearance: none; cursor: pointer; }
-html, body { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.touch-dot { position: fixed; z-index: 9; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; border: 2px solid #ff3a22; background: #ff3a2233; pointer-events: none; font: 600 10px/1 var(--body); color: #c11; display: grid; place-items: center; }
 body { background: #cfd3d6; color: var(--ink); font: 15px/1.4 var(--body); display: grid; place-items: center; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none;
   padding: env(safe-area-inset-top, 0) max(12px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0) max(12px, env(safe-area-inset-left, 0px)); }
 .pad { position: relative; width: min(100%, 860px); aspect-ratio: 2.1 / 1; max-height: 96vh; background: radial-gradient(120% 90% at 50% 0%, #fff, var(--shell) 55%, var(--shell-edge)); border-radius: 42px 42px 120px 120px / 42px 42px 90px 90px; box-shadow: 0 18px 40px #0003, inset 0 -6px 0 #0000000f; }
 .panel { position: absolute; left: 7%; right: 7%; top: 7%; height: 46%; background: linear-gradient(180deg, var(--panel-2), var(--panel)); border-radius: 26px; box-shadow: inset 0 1px 0 #ffffff1a; }
 .status { position: absolute; left: 50%; top: 56%; transform: translateX(-50%); width: 40%; text-align: center; font: 500 12px/1.3 var(--display); color: #6f757b; }
 .status b { color: #1d2023; font-weight: 600; }
-.small { position: absolute; display: grid; grid-template-columns: repeat(4, auto); gap: 8px; left: 50%; top: 44%; transform: translateX(-50%); }
-.small button { width: 64px; height: 20px; border-radius: 10px; border: 0; background: #2b2e31; color: var(--dim); font: 600 10px/20px var(--body); box-shadow: inset 0 1px 0 #ffffff14; }
+.small { position: absolute; display: grid; grid-template-columns: repeat(4, auto); gap: 6px; left: 50%; top: 44%; transform: translateX(-50%); }
+.small button { width: clamp(46px, 7vw, 64px); height: 20px; border-radius: 10px; border: 0; background: #2b2e31; color: var(--dim); font: 600 10px/20px var(--body); box-shadow: inset 0 1px 0 #ffffff14; }
 .small button.on { color: var(--ink); background: #3a3f44; }
 .leds { position: absolute; left: 50%; top: 78%; transform: translateX(-50%); display: flex; gap: 8px; }
 .leds i { width: 16px; height: 4px; border-radius: 2px; background: #3a3d40; }
@@ -92,7 +93,7 @@ body { background: #cfd3d6; color: var(--ink); font: 15px/1.4 var(--body); displ
   <div class="small">
     <button id="bConnect">เชื่อมต่อ</button>
     <button id="bSpeed">ความเร็ว</button>
-    <button id="bEdge" class="on">กันตกขอบ</button>
+    <button id="bEdge" class="on" aria-label="กันตกขอบ">กันตก</button>
     <button id="bFull">เต็มจอ</button>
   </div>
   <div class="leds" id="leds"><i></i><i></i><i></i><i></i></div>
@@ -282,9 +283,9 @@ function hold(el, on, off) {
     el.classList.remove('down');
     off?.();
   };
-  el.addEventListener('touchstart', down, { passive: false });
-  el.addEventListener('touchend', up, { passive: false });
-  el.addEventListener('touchcancel', up);
+  // Touch arrives through the page-level dispatcher below; mouse and pen come straight here.
+  el.addEventListener('padpress', down);
+  el.addEventListener('padrelease', up);
   el.addEventListener('pointerdown', e => {
     if (e.pointerType === 'touch') return;
     down(e);
@@ -293,6 +294,60 @@ function hold(el, on, off) {
   el.addEventListener('pointerup', e => { if (e.pointerType !== 'touch') up(e); });
   el.addEventListener('pointercancel', e => { if (e.pointerType !== 'touch') up(e); });
 }
+// iOS web views can deliver taps to the wrong element after the phone rotates, so the page
+// takes every touch itself and finds the button under the finger from its coordinates.
+const BUTTONS = '.face button, .dpad button, #bStart, .small button';
+const fingers = new Map();
+const debug = /[?&]debug/.test(location.search);
+function buttonAt(x, y) {
+  const hit = document.elementFromPoint(x, y);
+  if (hit?.closest('.stick')) return null;          // joysticks track their own pointer
+  const direct = hit?.closest(BUTTONS);
+  if (direct) return direct;
+  let best = null, bestD = 24;                      // forgive a near miss by up to 24 px
+  for (const b of document.querySelectorAll(BUTTONS)) {
+    const r = b.getBoundingClientRect();
+    const d = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  return best;
+}
+function showDot(t, label) {
+  if (!debug) return;
+  const dot = document.createElement('div');
+  dot.className = 'touch-dot';
+  dot.style.left = t.clientX + 'px';
+  dot.style.top = t.clientY + 'px';
+  dot.textContent = label;
+  document.body.appendChild(dot);
+  setTimeout(() => dot.remove(), 900);
+}
+document.addEventListener('touchstart', e => {
+  if (e.target.closest?.('.warn')) return;          // the PIN box behaves like a normal form
+  if (!e.target.closest?.('.stick') && e.cancelable) e.preventDefault();
+  for (const t of e.changedTouches) {
+    const b = buttonAt(t.clientX, t.clientY);
+    showDot(t, b ? (b.dataset.k || b.dataset.d || b.textContent.trim().slice(0, 4)) : '·');
+    if (!b) continue;
+    fingers.set(t.identifier, b);
+    b.dispatchEvent(new Event('padpress'));
+  }
+}, { passive: false });
+const release = e => {
+  for (const t of e.changedTouches) {
+    const b = fingers.get(t.identifier);
+    if (!b) continue;
+    fingers.delete(t.identifier);
+    b.dispatchEvent(new Event('padrelease'));
+  }
+};
+document.addEventListener('touchend', release);
+document.addEventListener('touchcancel', release);
+// Rotation can leave the page zoomed or scrolled; put it back so taps line up again.
+const settle = () => { window.scrollTo(0, 0); document.documentElement.style.height = window.innerHeight + 'px'; };
+window.addEventListener('orientationchange', () => setTimeout(settle, 250));
+window.addEventListener('resize', settle);
+settle();
 // Long presses must not open the iOS text menu or start a selection anywhere on the pad.
 ['contextmenu', 'selectstart', 'gesturestart'].forEach(t => document.addEventListener(t, e => { if (!(e.target instanceof HTMLInputElement)) e.preventDefault(); }));
 document.querySelectorAll('.dpad button').forEach(b => hold(b, () => { input.dpad[b.dataset.d] = 1; }, () => { input.dpad[b.dataset.d] = 0; }));
